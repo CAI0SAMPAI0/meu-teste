@@ -4,6 +4,7 @@ import traceback
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.keys import Keys  # Movido para o topo
 import undetected_chromedriver as uc
 
 
@@ -34,12 +35,8 @@ def iniciar_driver(userdir, headless=False, logger=None):
     if userdir:
         options.add_argument(f"--user-data-dir={userdir}")
     
-    options.add_argument("--disable-notifications")
     options.add_argument("--disable-infobars")
     options.add_argument("--disable-extensions")
-    options.add_argument("--start-maximized")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
 
     if headless:
         options.add_argument("--headless=new")
@@ -50,6 +47,9 @@ def iniciar_driver(userdir, headless=False, logger=None):
     try:
         driver = uc.Chrome(options=options, version_main=None)
         driver.get("https://web.whatsapp.com")
+        if not headless:
+            driver.maximize_window()
+        time.sleep(2)
         return driver
     except Exception as e:
         _log(logger, f"ERRO ao iniciar driver: {e}")
@@ -166,38 +166,40 @@ def executar_envio(
         if target.isdigit():
             # Se for número puro, usa API do WhatsApp
             driver.get(f"https://web.whatsapp.com/send?phone={target}")
+            time.sleep(5)  # Aguarda carregamento para evitar reloads
         else:
             # Se for nome, busca na lista de conversas
-            driver.get("https://web.whatsapp.com")
-            time.sleep(3)
+            # Evite recarregar se já na página
+            time.sleep(3)  # Tempo para estabilizar
             
             # Busca o contato
-            search_box = WebDriverWait(driver, 6).until(
+            search_box = WebDriverWait(driver, 10).until(  # Timeout aumentado
                 EC.presence_of_element_located(
                     (By.XPATH, "//div[@contenteditable='true'][@data-tab='3']")
                 )
             )
             search_box.click()
             search_box.send_keys(target)
-            time.sleep(2)
+            time.sleep(3)  # Aumentado para resultados carregarem completamente
             
-            # Clica no primeiro resultado
-            contact = WebDriverWait(driver, 3).until(
+            # Clica no primeiro resultado usando XPath mais flexível
+            contact = WebDriverWait(driver, 10).until(  # Timeout aumentado
                 EC.element_to_be_clickable(
-                    (By.XPATH, f"//span[@title='{target}']")
+                    (By.XPATH, f"//span[contains(@title, '{target}')]")
                 )
             )
-            contact.click()
+            # Use clique via JavaScript para evitar intercepção por overlays
+            driver.execute_script("arguments[0].click();", contact)
 
         # Aguarda caixa de mensagem aparecer
         _log(logger, "Aguardando caixa de mensagem...")
-        WebDriverWait(driver, 5).until(
+        WebDriverWait(driver, 10).until(  # Timeout aumentado
             EC.presence_of_element_located(
                 (By.XPATH, "//footer//div[@contenteditable='true']")
             )
         )
         
-        time.sleep(2)  # Aguarda carregamento completo
+        time.sleep(2.5)  # Aguarda carregamento completo
 
         # =============================
         # ENVIO TEXTO
@@ -217,13 +219,12 @@ def executar_envio(
                 caixa.send_keys(linha)
                 if i < len(linhas) - 1:
                     # Shift+Enter para nova linha
-                    from selenium.webdriver.common.keys import Keys
-                    caixa.send_keys(Keys.SHIFT, Keys.ENTER)
+                    caixa.send_keys(Keys.SHIFT + Keys.ENTER)
             
             if mode == "text":
                 # Envia mensagem
                 _log(logger, "Enviando mensagem...")
-                caixa.send_keys("\n")
+                caixa.send_keys(Keys.ENTER)
                 time.sleep(2)
 
         # =============================
@@ -290,8 +291,25 @@ def executar_envio(
     finally:
         if driver:
             _log(logger, "Encerrando navegador...")
+            time.sleep(5)  # Wait extra para salvar sessão
             try:
                 driver.quit()
-            except:
-                pass
+                _log(logger, "Navegador fechado com sucesso.")
+            except Exception as e:
+                _log(logger, f"Erro ao quitter driver: {e}")
+                # Forçar kill de processos (para Windows)
+                import subprocess
+                try:
+                    subprocess.call(['taskkill', '/F', '/IM', 'chrome.exe', '/T'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.call(['taskkill', '/F', '/IM', 'chromedriver.exe', '/T'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    _log(logger, "Processos do Chrome forçados a fechar (Windows).")
+                except:
+                    pass
+                # Para Linux/Mac, usar pkill
+                try:
+                    subprocess.call(['pkill', '-f', 'chrome'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.call(['pkill', '-f', 'chromedriver'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    _log(logger, "Processos do Chrome forçados a fechar (Unix).")
+                except:
+                    pass
             _log(logger, "=" * 60)
