@@ -1,0 +1,341 @@
+import sqlite3
+import os
+import sys
+import datetime
+from typing import List, Tuple, Optional
+from pathlib import Path
+
+# =============================
+# CONFIGURAÇÃO DE CAMINHOS
+# =============================
+if getattr(sys, 'frozen', False):
+    BASE_DIR = Path(sys.executable).parent
+else:
+    BASE_DIR = Path(__file__).parent.parent.absolute()
+
+DATA_DIR = BASE_DIR / "data"
+DB_PATH = DATA_DIR / "scheduler.db"
+
+# Garante que diretório existe
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+class SchedulerDB:
+    """
+    Gerenciador do banco de dados SQLite para agendamentos.
+    
+    Schema da tabela:
+    - id: Identificador único
+    - task_name: Nome único da tarefa (usado pelo Task Scheduler)
+    - target: Contato/número para enviar
+    - mode: Tipo de envio ('text', 'file', 'file_text')
+    - message: Texto da mensagem (opcional)
+    - file_path: Caminho do arquivo (opcional)
+    - scheduled_time: Data/hora agendada (ISO format)
+    - created_at: Data/hora de criação
+    - status: Estado atual ('pending', 'running', 'completed', 'failed')
+    - json_path: Caminho do JSON de instrução
+    - executed_at: Data/hora de execução
+    - error_message: Mensagem de erro
+    """
+
+    def __init__(self, db_path: Path = DB_PATH):
+        self.db_path = db_path
+        self._init_db()
+
+    def _get_conn(self):
+        """
+        Cria conexão com timeout maior para evitar locks.
+        
+        Configurações importantes:
+        - timeout=30: Aguarda até 30s se banco estiver locked
+        - check_same_thread=False: Permite uso em diferentes threads
+        - PARSE_DECLTYPES: Converte tipos automaticamente
+        """
+        return sqlite3.connect(
+            str(self.db_path),
+            timeout=30,
+            detect_types=sqlite3.PARSE_DECLTYPES,
+            check_same_thread=False
+        )
+
+    def _init_db(self):
+        """Cria tabela se não existir"""
+        conn = self._get_conn()
+        cur = conn.cursor()
+        
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS agendamentos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_name TEXT UNIQUE NOT NULL,
+            target TEXT NOT NULL,
+            mode TEXT NOT NULL CHECK (mode IN ('text', 'file', 'file_text')),
+            message TEXT,
+            file_path TEXT,
+            scheduled_time TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            status TEXT DEFAULT 'pending' 
+                CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
+            json_path TEXT,
+            executed_at TEXT,
+            error_message TEXT
+        )
+        """)
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"✓ Database inicializado: {self.db_path}")
+
+    # =============================
+    # CREATE
+    # =============================
+    def adicionar(
+        self,
+        task_name: str,
+        target: str,
+        mode: str,
+        scheduled_time: datetime.datetime,
+        message: Optional[str] = None,
+        file_path: Optional[str] = None,
+        json_path: Optional[str] = None
+    ) -> int:
+        """
+        Adiciona novo agendamento.
+        
+        Returns:
+            int: ID do agendamento criado, ou -1 se task_name já existe
+        """
+        conn = self._get_conn()
+        cur = conn.cursor()
+        
+        try:
+            cur.execute("""
+                INSERT INTO agendamentos (
+                    task_name, target, mode, message, file_path,
+                    scheduled_time, created_at, json_path, status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+            """, (
+                task_name,
+                target,
+                mode,
+                message,
+                file_path,
+                scheduled_time.isoformat(),
+                datetime.datetime.now().isoformat(),
+                json_path
+            ))
+            
+            conn.commit()
+            task_id = cur.lastrowid
+            
+            print(f"✓ Agendamento criado: ID={task_id}, task_name={task_name}")
+            return task_id
+            
+        except sqlite3.IntegrityError as e:
+            print(f"✗ Erro: Task name '{task_name}' já existe")
+            return -1
+            
+        finally:
+            conn.close()
+
+    # =============================
+    # READ
+    # =============================
+    def listar_todos(self) -> List[Tuple]:
+        """
+        Lista TODOS os agendamentos (qualquer status).
+        
+        Returns:
+            List[Tuple]: Lista de tuplas com dados resumidos
+        """
+        conn = self._get_conn()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT 
+                id, task_name, target, mode, 
+                scheduled_time, status, created_at
+            FROM agendamentos
+            ORDER BY scheduled_time DESC
+        """)
+        
+        rows = cur.fetchall()
+        conn.close()
+        
+        return rows
+
+    def listar_pendentes(self) -> List[Tuple]:
+        """
+        Lista apenas agendamentos PENDENTES.
+        
+        Returns:
+            List[Tuple]: Lista ordenada por data/hora
+        """
+        conn = self._get_conn()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT 
+                id, task_name, target, mode, message, 
+                file_path, scheduled_time, json_path
+            FROM agendamentos
+            WHERE status = 'pending'
+            ORDER BY scheduled_time ASC
+        """)
+        
+        rows = cur.fetchall()
+        conn.close()
+        
+        return rows
+
+    def obter_detalhes(self, identificador) -> Optional[dict]:
+        """
+        Obtém detalhes completos de um agendamento.
+        
+        Args:
+            identificador: ID (int) ou task_name (str)
+            
+        Returns:
+            dict: Dados completos do agendamento, ou None se não encontrado
+        """
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row  # Permite acesso por nome de coluna
+        cur = conn.cursor()
+        
+        if isinstance(identificador, int):
+            cur.execute("SELECT * FROM agendamentos WHERE id = ?", (identificador,))
+        else:
+            cur.execute("SELECT * FROM agendamentos WHERE task_name = ?", (identificador,))
+        
+        row = cur.fetchone()
+        conn.close()
+        
+        return dict(row) if row else None
+
+    # =============================
+    # UPDATE
+    # =============================
+    def atualizar_status(
+        self,
+        identificador,
+        status: str,
+        error_message: Optional[str] = None
+    ):
+        """
+        Atualiza status de um agendamento.
+        
+        Args:
+            identificador: ID ou task_name
+            status: Novo status ('pending', 'running', 'completed', 'failed')
+            error_message: Mensagem de erro (opcional)
+        """
+        conn = self._get_conn()
+        cur = conn.cursor()
+        now = datetime.datetime.now().isoformat()
+        
+        if isinstance(identificador, int):
+            cur.execute("""
+                UPDATE agendamentos
+                SET status = ?, executed_at = ?, error_message = ?
+                WHERE id = ?
+            """, (status, now, error_message, identificador))
+        else:
+            cur.execute("""
+                UPDATE agendamentos
+                SET status = ?, executed_at = ?, error_message = ?
+                WHERE task_name = ?
+            """, (status, now, error_message, identificador))
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"✓ Status atualizado: {identificador} → {status}")
+
+    # =============================
+    # DELETE
+    # =============================
+    def deletar(self, identificador):
+        """
+        Remove um agendamento do banco.
+        
+        Args:
+            identificador: ID ou task_name
+        """
+        conn = self._get_conn()
+        cur = conn.cursor()
+        
+        if isinstance(identificador, int):
+            cur.execute("DELETE FROM agendamentos WHERE id = ?", (identificador,))
+        else:
+            cur.execute("DELETE FROM agendamentos WHERE task_name = ?", (identificador,))
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"✓ Agendamento deletado: {identificador}")
+
+    # =============================
+    # UTILITÁRIOS
+    # =============================
+    def registrar_erro(self, task_id: int, error_message: str):
+        """Atalho para registrar erro"""
+        self.atualizar_status(task_id, 'failed', error_message)
+
+    def contar_por_status(self) -> dict:
+        """
+        Conta agendamentos por status.
+        
+        Returns:
+            dict: {'pending': X, 'completed': Y, ...}
+        """
+        conn = self._get_conn()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT status, COUNT(*) as count
+            FROM agendamentos
+            GROUP BY status
+        """)
+        
+        rows = cur.fetchall()
+        conn.close()
+        
+        return {status: count for status, count in rows}
+
+
+# =============================
+# INSTÂNCIA GLOBAL
+# =============================
+# Singleton para uso em todo o app
+db = SchedulerDB()
+
+
+# =============================
+# TESTES (se executado diretamente)
+# =============================
+if __name__ == "__main__":
+    print("Testando database...")
+    
+    # Cria agendamento de teste
+    test_id = db.adicionar(
+        task_name=f"TEST_{datetime.datetime.now().timestamp()}",
+        target="5511999999999",
+        mode="text",
+        message="Teste de mensagem",
+        scheduled_time=datetime.datetime.now() + datetime.timedelta(hours=1)
+    )
+    
+    print(f"\nCriado: ID={test_id}")
+    
+    # Lista
+    print("\nTodos:")
+    for row in db.listar_todos():
+        print(f"  {row}")
+    
+    # Atualiza
+    db.atualizar_status(test_id, "completed")
+    
+    # Mostra contadores
+    print("\nContadores:", db.contar_por_status())
