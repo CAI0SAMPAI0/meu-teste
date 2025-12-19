@@ -1,4 +1,3 @@
-# executor.spec
 import os
 from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.building.build_main import Analysis, PYZ, EXE, COLLECT
@@ -6,12 +5,15 @@ from PyInstaller.building.build_main import Analysis, PYZ, EXE, COLLECT
 BASE_DIR = os.getcwd()
 
 # --------------------------
-# Forçar inclusão dos módulos essenciais
+# Módulos essenciais (incluindo http e urllib)
 # --------------------------
 hiddenimports = (
     collect_submodules("selenium") +
     collect_submodules("undetected_chromedriver") +
-    ["email"]  # necessário para evitar ModuleNotFoundError
+    collect_submodules("http") +      # CRÍTICO para Selenium
+    collect_submodules("urllib") +    # CRÍTICO para Selenium
+    collect_submodules("email") +
+    ["http.client", "http.server", "urllib.request", "urllib.parse"]
 )
 
 # --------------------------
@@ -21,11 +23,12 @@ a = Analysis(
     ["executor.py"],
     pathex=[BASE_DIR],
     binaries=[],
-    datas=[],  # executor não precisa de pastas extras
+    datas=[],
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
     excludes=[
+        # Removi http, urllib e xml da lista de exclusão!
         "tkinter",
         "PySide6",
         "PyQt5",
@@ -39,10 +42,8 @@ a = Analysis(
         "notebook",
         "pytest",
         "unittest",
-        "http",
-        "xml",
     ],
-    noarchive=True,  # crítico para Selenium
+    noarchive=False,  # Mudei para False (melhor compatibilidade)
 )
 
 # --------------------------
@@ -60,10 +61,10 @@ exe = EXE(
     exclude_binaries=True,
     name="executor",
     debug=False,
-    strip=True,
+    strip=False,
     upx=True,
-    console=False,  # executor silencioso
-    disable_windowed_traceback=True,
+    console=False,
+    disable_windowed_traceback=False,  # Mudei para False (facilita debug)
 )
 
 # --------------------------
@@ -74,7 +75,7 @@ coll = COLLECT(
     a.binaries,
     a.zipfiles,
     a.datas,
-    strip=True,
+    strip=False,
     upx=True,
     upx_exclude=[
         "vcruntime140.dll",

@@ -1,11 +1,11 @@
 """
 Sistema de agendamento usando Windows Task Scheduler.
 
-Fluxo:
+Fluxo CORRIGIDO:
 1. Criar arquivo JSON com instruções de envio
 2. Criar tarefa no Windows Task Scheduler
 3. Na hora agendada, Task Scheduler executa: app.py --auto caminho.json
-4. app.py lê o JSON e executa a automação (HEADLESS)
+4. app.py lê o JSON e executa a automação
 """
 
 import subprocess
@@ -28,6 +28,10 @@ else:
 TASKS_DIR = BASE_DIR / "scheduled_tasks"
 TASKS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Diretório de logs para debug
+LOGS_DIR = BASE_DIR / "logs"
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def create_task_json(
     task_id: int,
@@ -38,16 +42,6 @@ def create_task_json(
 ) -> Path:
     """
     Cria arquivo JSON com instruções para execução automática.
-    
-    Args:
-        task_id: ID único da tarefa
-        target: Contato/número
-        mode: Tipo de envio
-        message: Texto (opcional)
-        file_path: Arquivo (opcional)
-        
-    Returns:
-        Path: Caminho do arquivo JSON criado
     """
     json_filename = f"task_{task_id}.json"
     json_path = TASKS_DIR / json_filename
@@ -57,7 +51,7 @@ def create_task_json(
         "target": target,
         "mode": mode,
         "message": message or "",
-        "file_path": file_path or ""
+        "file": file_path or ""  # ← CORRIGIDO: era "file_path", agora é "file"
     }
     
     # Salva JSON com encoding UTF-8
@@ -65,6 +59,7 @@ def create_task_json(
         json.dump(task_data, f, indent=2, ensure_ascii=False)
     
     print(f"✓ JSON criado: {json_path}")
+    print(f"  Conteúdo: {task_data}")
     return json_path
 
 
@@ -78,21 +73,6 @@ def create_windows_task(
 ) -> bool:
     """
     Cria tarefa agendada no Windows Task Scheduler.
-    A tarefa executará o app em modo --auto (headless).
-    
-    Args:
-        task_id: ID único da tarefa
-        scheduled_time: Data/hora no formato "YYYY-MM-DD HH:MM:SS"
-        target: Contato/número
-        mode: Tipo de envio
-        message: Texto (opcional)
-        file_path: Arquivo (opcional)
-        
-    Returns:
-        bool: True se criou com sucesso
-        
-    Raises:
-        Exception: Se falhar ao criar tarefa
     """
     
     # =============================
@@ -104,50 +84,95 @@ def create_windows_task(
     # 2. FORMATA DATA/HORA PARA SCHTASKS
     # =============================
     dt = datetime.strptime(scheduled_time, "%Y-%m-%d %H:%M:%S")
-    run_date = dt.strftime("%d/%m/%Y")  # Formato brasileiro DD/MM/YYYY
+    run_date = dt.strftime("%d/%m/%Y")
     run_time = dt.strftime("%H:%M")
     
     # =============================
-    # 3. DETERMINA COMANDO A EXECUTAR
+    # 3. DETERMINA EXECUTÁVEL E CAMINHOS
     # =============================
     if getattr(sys, 'frozen', False):
-        # Se for executável (.exe) compilado com PyInstaller
+        # Modo EXE (PyInstaller)
         exe_path = sys.executable
-        task_command = f'"{exe_path}" --auto "{json_path}"'
+        app_path = None
+        python_exe = None
     else:
-        # Se for script Python em desenvolvimento
+        # Modo desenvolvimento
+        exe_path = None
         python_exe = sys.executable
         app_path = BASE_DIR / "app.py"
-        task_command = f'"{python_exe}" "{app_path}" --auto "{json_path}"'
     
-    # Nome único da tarefa
     task_name = f"StudyPractices_WA_{task_id}"
     
     # =============================
-    # 4. MONTA COMANDO SCHTASKS
+    # 4. CRIA ARQUIVO BAT (mais confiável)
+    # =============================
+    bat_path = TASKS_DIR / f"task_{task_id}.bat"
+    
+    with open(bat_path, "w", encoding="utf-8") as f:
+        f.write("@echo off\n")
+        f.write("chcp 65001 > nul\n")
+        
+        # Navega para o diretório correto
+        f.write(f'cd /d "{BASE_DIR}"\n')
+        
+        # Log inicial
+        f.write(f'echo ============================================ > "{LOGS_DIR / f"task_{task_id}.log"}"\n')
+        f.write(f'echo INICIO DA TAREFA {task_id} >> "{LOGS_DIR / f"task_{task_id}.log"}"\n')
+        f.write(f'echo Data/Hora: %date% %time% >> "{LOGS_DIR / f"task_{task_id}.log"}"\n')
+        f.write(f'echo Diretorio: %CD% >> "{LOGS_DIR / f"task_{task_id}.log"}"\n')
+        f.write(f'echo ============================================ >> "{LOGS_DIR / f"task_{task_id}.log"}"\n')
+        f.write(f'echo. >> "{LOGS_DIR / f"task_{task_id}.log"}"\n')
+        
+        # Log geral
+        f.write(f'echo [%date% %time%] Iniciando tarefa {task_id} >> "{LOGS_DIR / "scheduler.log"}"\n')
+        
+        # Comando principal
+        if getattr(sys, 'frozen', False):
+            f.write(f'"{exe_path}" --auto "{json_path}" >> "{LOGS_DIR / f"task_{task_id}.log"}" 2>&1\n')
+        else:
+            f.write(f'"{python_exe}" "{app_path}" --auto "{json_path}" >> "{LOGS_DIR / f"task_{task_id}.log"}" 2>&1\n')
+        
+        # Captura código de saída
+        f.write(f'set EXIT_CODE=%ERRORLEVEL%\n')
+        f.write(f'echo. >> "{LOGS_DIR / f"task_{task_id}.log"}"\n')
+        f.write(f'echo ============================================ >> "{LOGS_DIR / f"task_{task_id}.log"}"\n')
+        f.write(f'echo FIM DA TAREFA {task_id} >> "{LOGS_DIR / f"task_{task_id}.log"}"\n')
+        f.write(f'echo Codigo de saida: %EXIT_CODE% >> "{LOGS_DIR / f"task_{task_id}.log"}"\n')
+        f.write(f'echo ============================================ >> "{LOGS_DIR / f"task_{task_id}.log"}"\n')
+        
+        # Log geral
+        f.write(f'echo [%date% %time%] Tarefa {task_id} finalizada (codigo: %EXIT_CODE%) >> "{LOGS_DIR / "scheduler.log"}"\n')
+        
+        # Retorna código de saída
+        f.write(f'exit /b %EXIT_CODE%\n')
+    
+    print(f"✓ Arquivo BAT criado: {bat_path}")
+    
+    # =============================
+    # 5. MONTA COMANDO SCHTASKS
     # =============================
     schtasks_command = [
         "schtasks",
         "/Create",
-        "/F",  # Force: sobrescreve se já existir
-        "/SC", "ONCE",  # Schedule: uma única vez
-        "/SD", run_date,  # Start Date
-        "/ST", run_time,  # Start Time
-        "/TN", task_name,  # Task Name
-        "/TR", task_command,  # Task Run: comando a executar
-        "/RL", "HIGHEST"  # Run Level: privilégios mais altos (necessário para automação)
+        "/F",
+        "/SC", "ONCE",
+        "/SD", run_date,
+        "/ST", run_time,
+        "/TN", task_name,
+        "/TR", f'"{bat_path}"',  # ← USA O BAT em vez do comando direto
+        "/RL", "HIGHEST"
     ]
     
     # =============================
-    # 5. EXECUTA COMANDO
+    # 6. EXECUTA COMANDO
     # =============================
     print(f"\n{'='*60}")
     print(f"CRIANDO TAREFA AGENDADA NO WINDOWS")
     print(f"{'='*60}")
     print(f"Nome: {task_name}")
     print(f"Data/Hora: {run_date} {run_time}")
-    print(f"Comando: {task_command}")
-    print(f"Modo: HEADLESS (automático)")
+    print(f"BAT: {bat_path}")
+    print(f"JSON: {json_path}")
     print(f"{'='*60}\n")
     
     try:
@@ -157,12 +182,15 @@ def create_windows_task(
             shell=False,
             capture_output=True,
             text=True,
-            encoding='latin-1'  # Windows usa latin-1 por padrão
+            encoding='latin-1'
         )
         
         print("✓ Tarefa criada com sucesso no Task Scheduler!")
-        if result.stdout:
-            print(f"Output: {result.stdout}")
+        print(f"\n📝 Para testar manualmente:")
+        print(f"   schtasks /Run /TN {task_name}")
+        print(f"\n📋 Para ver detalhes:")
+        print(f"   schtasks /Query /TN {task_name} /V /FO LIST")
+        print(f"\n📁 Logs em: {LOGS_DIR}")
         
         return True
         
@@ -182,22 +210,14 @@ def create_windows_task(
 
 
 def delete_windows_task(task_id: int) -> bool:
-    """
-    Remove tarefa do Windows Task Scheduler.
-    
-    Args:
-        task_id: ID da tarefa
-        
-    Returns:
-        bool: True se removeu, False se não encontrou
-    """
+    """Remove tarefa do Windows Task Scheduler."""
     task_name = f"StudyPractices_WA_{task_id}"
     
     command = [
         "schtasks",
         "/Delete",
         "/TN", task_name,
-        "/F"  # Force: não pede confirmação
+        "/F"
     ]
     
     try:
@@ -212,36 +232,71 @@ def delete_windows_task(task_id: int) -> bool:
         
         print(f"✓ Tarefa removida do Task Scheduler: {task_name}")
         
-        # Remove JSON também
+        # Remove arquivos associados
         json_path = TASKS_DIR / f"task_{task_id}.json"
+        bat_path = TASKS_DIR / f"task_{task_id}.bat"
+        
         if json_path.exists():
             json_path.unlink()
             print(f"✓ JSON removido: {json_path}")
+        
+        if bat_path.exists():
+            bat_path.unlink()
+            print(f"✓ BAT removido: {bat_path}")
         
         return True
         
     except subprocess.CalledProcessError as e:
         print(f"⚠️  Tarefa {task_name} não encontrada ou erro ao remover")
-        if e.stderr:
-            print(f"   Detalhes: {e.stderr}")
         return False
     except Exception as e:
         print(f"⚠️  Erro ao deletar: {e}")
         return False
 
 
-def list_windows_tasks() -> list:
+def test_task_execution(task_id: int) -> bool:
     """
-    Lista todas as tarefas do Study Practices no Task Scheduler.
+    Testa a execução de uma tarefa imediatamente.
+    Útil para debug.
+    """
+    task_name = f"StudyPractices_WA_{task_id}"
     
-    Returns:
-        list: Lista de nomes das tarefas encontradas
-    """
+    command = [
+        "schtasks",
+        "/Run",
+        "/TN", task_name
+    ]
+    
+    try:
+        print(f"\n🧪 Testando execução da tarefa {task_id}...")
+        print(f"   Aguarde alguns segundos...")
+        
+        subprocess.run(
+            command,
+            check=True,
+            shell=False,
+            capture_output=True,
+            text=True,
+            encoding='latin-1'
+        )
+        
+        print(f"✓ Tarefa iniciada!")
+        print(f"📋 Verifique o log em: {LOGS_DIR / f'task_{task_id}.log'}")
+        
+        return True
+        
+    except subprocess.CalledProcessError as e:
+        print(f"✗ Erro ao executar tarefa: {e.stderr if e.stderr else 'Desconhecido'}")
+        return False
+
+
+def list_windows_tasks() -> list:
+    """Lista todas as tarefas do Study Practices."""
     command = [
         "schtasks",
         "/Query",
-        "/FO", "LIST",  # Format Output: LIST
-        "/V"  # Verbose
+        "/FO", "LIST",
+        "/V"
     ]
     
     try:
@@ -254,7 +309,6 @@ def list_windows_tasks() -> list:
             encoding='latin-1'
         )
         
-        # Filtra apenas tarefas do nosso app
         tasks = []
         for line in result.stdout.split('\n'):
             if "StudyPractices_WA_" in line:
@@ -265,22 +319,10 @@ def list_windows_tasks() -> list:
     except subprocess.CalledProcessError as e:
         print(f"Erro ao listar tarefas: {e.stderr if e.stderr else 'Desconhecido'}")
         return []
-    except Exception as e:
-        print(f"Erro ao listar: {e}")
-        return []
 
 
 def verificar_status_tarefa(task_id: int) -> Optional[str]:
-    """
-    Verifica status de uma tarefa específica.
-    
-    Args:
-        task_id: ID da tarefa
-        
-    Returns:
-        str: Status da tarefa, ou None se não encontrada
-            Possíveis valores: "Ready", "Running", "Disabled"
-    """
+    """Verifica status de uma tarefa específica."""
     task_name = f"StudyPractices_WA_{task_id}"
     
     command = [
@@ -301,33 +343,28 @@ def verificar_status_tarefa(task_id: int) -> Optional[str]:
             encoding='latin-1'
         )
         
-        # Procura pela linha de status
         for line in result.stdout.split('\n'):
-            if "Status:" in line or "Estado:" in line:  # PT/EN
+            if "Status:" in line or "Estado:" in line:
                 return line.split(":")[-1].strip()
         
         return None
         
     except subprocess.CalledProcessError:
         return None
-    except Exception:
-        return None
 
 
 # =============================
-# TESTES (se executado diretamente)
+# TESTES
 # =============================
 if __name__ == "__main__":
     print("Testando sistema de agendamento...")
-    print("NOTA: Tarefas agendadas rodarão em HEADLESS\n")
     
-    # Cria tarefa de teste para daqui a 2 minutos
     from datetime import timedelta
     
     test_time = (datetime.now() + timedelta(minutes=2)).strftime("%Y-%m-%d %H:%M:%S")
-    test_id = 99999  # ID de teste
+    test_id = 99999
     
-    print(f"\nCriando tarefa de teste para: {test_time}")
+    print(f"\n🧪 Criando tarefa de teste para: {test_time}")
     
     try:
         create_windows_task(
@@ -335,13 +372,12 @@ if __name__ == "__main__":
             scheduled_time=test_time,
             target="5511999999999",
             mode="text",
-            message="Mensagem de teste automático (HEADLESS)"
+            message="Mensagem de teste automático"
         )
         
         print("\n✓ Teste concluído!")
-        print(f"  A tarefa executará em HEADLESS (sem mostrar navegador)")
-        print(f"  Verifique em 2 minutos se a tarefa executou.")
-        print(f"  Log estará em: logs/auto_{datetime.now().strftime('%Y-%m-%d')}.log")
+        print(f"\n🔍 Para testar agora:")
+        print(f"   python -c \"from core.scheduler import test_task_execution; test_task_execution({test_id})\"")
         
     except Exception as e:
         print(f"\n✗ Erro no teste: {e}")
