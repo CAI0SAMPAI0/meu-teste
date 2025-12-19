@@ -5,7 +5,7 @@ Fluxo:
 1. Criar arquivo JSON com instruções de envio
 2. Criar tarefa no Windows Task Scheduler
 3. Na hora agendada, Task Scheduler executa: app.py --auto caminho.json
-4. app.py lê o JSON e executa a automação
+4. app.py lê o JSON e executa a automação (HEADLESS)
 """
 
 import subprocess
@@ -78,6 +78,7 @@ def create_windows_task(
 ) -> bool:
     """
     Cria tarefa agendada no Windows Task Scheduler.
+    A tarefa executará o app em modo --auto (headless).
     
     Args:
         task_id: ID único da tarefa
@@ -103,18 +104,18 @@ def create_windows_task(
     # 2. FORMATA DATA/HORA PARA SCHTASKS
     # =============================
     dt = datetime.strptime(scheduled_time, "%Y-%m-%d %H:%M:%S")
-    run_date = dt.strftime("%d/%m/%Y")  # Formato brasileiro
+    run_date = dt.strftime("%d/%m/%Y")  # Formato brasileiro DD/MM/YYYY
     run_time = dt.strftime("%H:%M")
     
     # =============================
     # 3. DETERMINA COMANDO A EXECUTAR
     # =============================
     if getattr(sys, 'frozen', False):
-        # Se for executável (.exe)
+        # Se for executável (.exe) compilado com PyInstaller
         exe_path = sys.executable
         task_command = f'"{exe_path}" --auto "{json_path}"'
     else:
-        # Se for script Python
+        # Se for script Python em desenvolvimento
         python_exe = sys.executable
         app_path = BASE_DIR / "app.py"
         task_command = f'"{python_exe}" "{app_path}" --auto "{json_path}"'
@@ -134,18 +135,19 @@ def create_windows_task(
         "/ST", run_time,  # Start Time
         "/TN", task_name,  # Task Name
         "/TR", task_command,  # Task Run: comando a executar
-        "/RL", "HIGHEST"  # Run Level: privilégios mais altos
+        "/RL", "HIGHEST"  # Run Level: privilégios mais altos (necessário para automação)
     ]
     
     # =============================
     # 5. EXECUTA COMANDO
     # =============================
     print(f"\n{'='*60}")
-    print(f"CRIANDO TAREFA AGENDADA")
+    print(f"CRIANDO TAREFA AGENDADA NO WINDOWS")
     print(f"{'='*60}")
     print(f"Nome: {task_name}")
     print(f"Data/Hora: {run_date} {run_time}")
     print(f"Comando: {task_command}")
+    print(f"Modo: HEADLESS (automático)")
     print(f"{'='*60}\n")
     
     try:
@@ -154,22 +156,29 @@ def create_windows_task(
             check=True,
             shell=False,
             capture_output=True,
-            text=True
+            text=True,
+            encoding='latin-1'  # Windows usa latin-1 por padrão
         )
         
         print("✓ Tarefa criada com sucesso no Task Scheduler!")
-        print(f"Output: {result.stdout}")
+        if result.stdout:
+            print(f"Output: {result.stdout}")
         
         return True
         
     except subprocess.CalledProcessError as e:
         error_msg = f"Erro ao criar tarefa no Windows:\n"
         error_msg += f"Código: {e.returncode}\n"
-        error_msg += f"Saída: {e.stdout}\n"
-        error_msg += f"Erro: {e.stderr}"
+        if e.stdout:
+            error_msg += f"Saída: {e.stdout}\n"
+        if e.stderr:
+            error_msg += f"Erro: {e.stderr}"
         
         print(f"✗ {error_msg}")
         raise Exception(error_msg)
+    except Exception as e:
+        print(f"✗ Erro inesperado: {e}")
+        raise
 
 
 def delete_windows_task(task_id: int) -> bool:
@@ -197,10 +206,11 @@ def delete_windows_task(task_id: int) -> bool:
             check=True,
             shell=False,
             capture_output=True,
-            text=True
+            text=True,
+            encoding='latin-1'
         )
         
-        print(f"✓ Tarefa removida: {task_name}")
+        print(f"✓ Tarefa removida do Task Scheduler: {task_name}")
         
         # Remove JSON também
         json_path = TASKS_DIR / f"task_{task_id}.json"
@@ -212,7 +222,11 @@ def delete_windows_task(task_id: int) -> bool:
         
     except subprocess.CalledProcessError as e:
         print(f"⚠️  Tarefa {task_name} não encontrada ou erro ao remover")
-        print(f"   Detalhes: {e.stderr}")
+        if e.stderr:
+            print(f"   Detalhes: {e.stderr}")
+        return False
+    except Exception as e:
+        print(f"⚠️  Erro ao deletar: {e}")
         return False
 
 
@@ -236,7 +250,8 @@ def list_windows_tasks() -> list:
             check=True,
             shell=False,
             capture_output=True,
-            text=True
+            text=True,
+            encoding='latin-1'
         )
         
         # Filtra apenas tarefas do nosso app
@@ -248,7 +263,10 @@ def list_windows_tasks() -> list:
         return tasks
         
     except subprocess.CalledProcessError as e:
-        print(f"Erro ao listar tarefas: {e.stderr}")
+        print(f"Erro ao listar tarefas: {e.stderr if e.stderr else 'Desconhecido'}")
+        return []
+    except Exception as e:
+        print(f"Erro ao listar: {e}")
         return []
 
 
@@ -279,21 +297,29 @@ def verificar_status_tarefa(task_id: int) -> Optional[str]:
             check=True,
             shell=False,
             capture_output=True,
-            text=True
+            text=True,
+            encoding='latin-1'
         )
         
         # Procura pela linha de status
         for line in result.stdout.split('\n'):
-            if "Status:" in line:
+            if "Status:" in line or "Estado:" in line:  # PT/EN
                 return line.split(":")[-1].strip()
         
         return None
         
     except subprocess.CalledProcessError:
         return None
+    except Exception:
+        return None
+
+
+# =============================
 # TESTES (se executado diretamente)
+# =============================
 if __name__ == "__main__":
     print("Testando sistema de agendamento...")
+    print("NOTA: Tarefas agendadas rodarão em HEADLESS\n")
     
     # Cria tarefa de teste para daqui a 2 minutos
     from datetime import timedelta
@@ -309,10 +335,11 @@ if __name__ == "__main__":
             scheduled_time=test_time,
             target="5511999999999",
             mode="text",
-            message="Mensagem de teste automático"
+            message="Mensagem de teste automático (HEADLESS)"
         )
         
         print("\n✓ Teste concluído!")
+        print(f"  A tarefa executará em HEADLESS (sem mostrar navegador)")
         print(f"  Verifique em 2 minutos se a tarefa executou.")
         print(f"  Log estará em: logs/auto_{datetime.now().strftime('%Y-%m-%d')}.log")
         
