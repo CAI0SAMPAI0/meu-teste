@@ -1,45 +1,75 @@
+# app.spec - ADICIONAR ESTAS LINHAS
 import os
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules, collect_data_files
 from PyInstaller.building.build_main import Analysis, PYZ, EXE, COLLECT
 
 BASE_DIR = os.getcwd()
 
-# --------------------------
-# Módulos essenciais (incluindo http e urllib)
-# --------------------------
-hiddenimports = (
-    collect_submodules("PySide6") +
-    collect_submodules("selenium") +
-    collect_submodules("undetected_chromedriver") +
-    collect_submodules("http") +      # CRÍTICO para Selenium
-    collect_submodules("urllib") +    # CRÍTICO para Selenium
-    collect_submodules("email") +
-    ["http.client", "http.server", "urllib.request", "urllib.parse"]
-)
+# =============================
+# COLETA TODAS AS DEPENDÊNCIAS
+# =============================
 
-# --------------------------
+# Coleta dados do undetected_chromedriver
+uc_data = collect_data_files('undetected_chromedriver', include_py_files=False)
+selenium_data = collect_data_files('selenium', include_py_files=False)
+
+# Hidden imports críticos
+hiddenimports = [
+    'undetected_chromedriver._compat',
+    'undetected_chromedriver.patcher',
+    'undetected_chromedriver.options',
+    'undetected_chromedriver.cdp',
+    'selenium.webdriver.common.by',
+    'selenium.webdriver.support.ui',
+    'selenium.webdriver.support.expected_conditions',
+    'websocket._app',
+    'websocket._core',
+    'websocket._abnf',
+    'packaging.version',
+    'packaging.specifiers',
+    'colorama',
+    'colorama.ansi',
+    'typing_extensions',
+    'http.cookies',
+    'http.cookiejar',
+    'urllib3',
+    'urllib3.contrib',
+    'urllib3.contrib.pyopenssl',
+    'charset_normalizer',
+    'sqlite3',  # ADICIONADO
+    'json',     # ADICIONADO
+    'pathlib',  # ADICIONADO
+    'datetime', # ADICIONADO
+]
+
+# Adiciona todos os submódulos
+for pkg in ['selenium', 'undetected_chromedriver', 'PySide6', 'websocket', 'sqlite3']:
+    hiddenimports.extend(collect_submodules(pkg))
+
 # Dados do projeto
-# --------------------------
 datas = [
     ("ui", "ui"),
     ("core", "core"),
     ("data", "data"),
     ("resources", "resources"),
+    ("scheduled_tasks", "scheduled_tasks"),
 ]
 
-# --------------------------
-# Analysis
-# --------------------------
+# Adiciona dados coletados
+datas += uc_data + selenium_data
+
+# =============================
+# ANÁLISE
+# =============================
 a = Analysis(
     ["app.py"],
     pathex=[BASE_DIR],
-    binaries=[],
+    binaries=[],  
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
     excludes=[
-        # Removi http, urllib e xml da lista de exclusão!
         "pytest",
         "unittest",
         "tkinter.test",
@@ -50,34 +80,39 @@ a = Analysis(
         "IPython",
         "jupyter",
         "notebook",
+        "test",
+        "tests",
+        "__pycache__",
     ],
     noarchive=False,
+    cipher=None,
 )
 
-# --------------------------
-# PYZ
-# --------------------------
 pyz = PYZ(a.pure, a.zipped_data, cipher=None)
 
-# --------------------------
-# EXE (ONEDIR para reduzir tempo de inicialização)
-# --------------------------
 exe = EXE(
     pyz,
     a.scripts,
-    [],  # Vazio = modo ONEDIR (mais rápido)
-    exclude_binaries=True,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    [],
     name="Study Practices",
-    debug=False,
+    debug=False,  # Mude para False em produção
+    bootloader_ignore_signals=False,
     strip=False,
+    uac_admin=True,  # IMPORTANTE: Permite criar tarefas agendadas
     upx=True,
-    console=False,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=True,  # Mantenha True para ver logs
+    disable_windowed_traceback=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
     icon=os.path.join("resources", "Taty_s-English-Logo.ico"),
 )
 
-# --------------------------
-# COLLECT
-# --------------------------
 coll = COLLECT(
     exe,
     a.binaries,
@@ -85,9 +120,6 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    upx_exclude=[
-        "vcruntime140.dll",
-        "python312.dll",
-    ],
-    name="Study Practices",
+    upx_exclude=[],
+    name="dist/Study Practices"
 )

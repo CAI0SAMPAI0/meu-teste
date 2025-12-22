@@ -1,0 +1,10 @@
+Guia de Uso - Study Practices
+
+Localização: Mantenha o executável sempre dentro desta pasta.
+
+Primeiro acesso: Vai aparecer uma tela laranja, clique em mais informações e executar assim mesmo. Todas as vezes pedirá permissão de administrador, pois caso agende alguma mensagem, o Windows informa que é necessário ser como administrador da máquina.
+Ao abrir, o Chrome aparecerá. Caso o WhatsApp não conecte sozinho, escaneie o QR Code.
+
+Automação: Não feche a janela do Chrome manualmente enquanto o robô estiver digitando ou anexando arquivos.
+
+Contador: O arquivo execution_count.txt que aparecerá na pasta serve para registrar o total de envios realizados.

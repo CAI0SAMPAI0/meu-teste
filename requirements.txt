@@ -1,5 +1,0 @@
-selenium
-undetected_chromedriver
-PySide6
-Tkinter
-sqlite3

@@ -1,9 +1,9 @@
 import os
 import time
 import traceback
-
+import sys
 import undetected_chromedriver as uc
-
+import json
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
@@ -16,6 +16,40 @@ SHORT_DELAY = 1.0
 MID_DELAY = 1.6
 LONG_DELAY = 2.0
 
+# --- FUNÇÃO PARA AGENDAMENTO ---
+def run_auto(json_path):
+    """ Função chamada pelo app.py quando o Windows dispara o agendamento. Lê o arquivo JSON e executa a automação. """
+    print(f"Iniciando automação agendada: {json_path}")
+    
+    if not os.path.exists(json_path):
+        print(f"Erro: Arquivo {json_path} não encontrado.")
+        return
+
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            dados = json.load(f)
+        
+        # Extrai os dados do JSON gerado pela sua interface
+        target = dados.get("target")
+        mode = dados.get("mode")
+        message = dados.get("message")
+        file_path = dados.get("file_path")
+
+        # Chama a função mestre j
+        executar_envio(
+            userdir=None, # O iniciar_driver achará o perfil
+            target=target,
+            mode=mode,
+            message=message,
+            file_path=file_path,
+            logger=lambda m: print(f"[AUTO-LOG] {m}")
+        )
+        print("✓ Automação agendada concluída com sucesso.")
+        
+    except Exception as e:
+        print(f"❌ Erro na execução automática: {e}")
+        traceback.print_exc()
+        sys.exit(1)
 # --------------------------
 # Utilitários internos
 # --------------------------
@@ -59,56 +93,158 @@ def _find(driver, candidates):
     return None, None
 
 # --------------------------
+# Headless a partir da 3ª execução
+# --------------------------
+
+def contador_execucao(incrementar=True):
+    import sys
+    import os
+
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    
+    count_file = os.path.join(base_dir, "execution_count.txt")
+    
+    count = 0
+    # Tenta ler o valor atual
+    if os.path.exists(count_file):
+        try:
+            with open(count_file, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                count = int(content) if content else 0
+        except Exception as e:
+            print(f"Erro ao ler arquivo de contagem: {e}")
+            count = 0
+
+    # Se for para incrementar, realiza a gravação "forçada" no disco
+    if incrementar:
+        count += 1
+        try:
+            # 'w' sobrescreve o arquivo com o novo número
+            with open(count_file, 'w', encoding='utf-8', errors='ignore') as f:
+                f.write(str(count))
+                f.flush()
+                os.fsync(f.fileno()) 
+        except Exception as e:
+            print(f"Erro ao gravar contador: {e}")
+            
+    return count
+
+# --------------------------
 # Driver
 # --------------------------
 def iniciar_driver(userdir=None, headless=False, timeout=60, logger=None):
     """
     Inicia undetected_chromedriver com perfil persistente.
-    Retorna driver pronto com WhatsApp Web aberto (ou pronto para autenticação).
     """
     try:
+        # CORREÇÃO CRÍTICA: Se userdir é None, usa o perfil da pasta do executável
         if userdir is None:
-            userdir = os.path.join(os.getcwd(), "chrome_profile")
+            # Determina o diretório base corretamente
+            if getattr(sys, 'frozen', False):
+                # Modo executável (.exe)
+                base_dir = os.path.dirname(sys.executable)
+            else:
+                # Modo desenvolvimento (.py)
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+                base_dir = os.path.join(base_dir, "..")
+            
+            userdir = os.path.join(base_dir, "perfil_bot_whatsapp")
+        
+        # Garante que o diretório existe
         if not os.path.exists(userdir):
             os.makedirs(userdir)
-
-        _log(logger, f"Iniciando Chrome com profile: {userdir}")
+            if logger:
+                logger(f"Criado novo perfil Chrome em: {userdir}")
+        
+        if logger:
+            logger(f"Iniciando Chrome com profile: {userdir}")
+            
+            # Verifica se o perfil já foi autenticado
+            local_state = os.path.join(userdir, "Local State")
+            if os.path.exists(local_state):
+                logger("✓ Perfil Chrome encontrado (pode estar autenticado)")
+            else:
+                logger("⚠️  Perfil Chrome novo/não autenticado")
 
         options = uc.ChromeOptions()
         options.add_argument(f"--user-data-dir={userdir}")
+
+        # --- HEADLESS ---
+        '''if headless:
+            if logger: logger("Modo invisível (headless) ativado para esta execução.")
+            options.add_argument('--headless=new')
+            options.add_argument("--window-size=1920,1080")
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--disable-setuid-sandbox')
+            options.add_argument('--remote-debugging-pipe')
+            options.add_argument('--no-first-run')
+            options.add_argument('--no-default-browser-check')
+        else:
+            options.add_argument("--start-maximized")'''
+
         options.add_argument("--disable-notifications")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
-        if headless:
-            options.add_argument("--headless=new")
-            options.add_argument("--disable-gpu")
+        options.add_argument("--start-maximized")
+        options.add_argument("--disable-infobars")
+        options.add_argument("--disable-extensions")
+        
+        # Importante para evitar problemas de permissão
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-default-browser-check")
 
         driver = uc.Chrome(options=options)
         driver.set_page_load_timeout(timeout)
-        driver.maximize_window()
+        
+        # Maximiza a janela (importante para elementos aparecerem)
+        if not headless:
+            driver.maximize_window()
 
-        _log(logger, "Chrome iniciado. Acessando WhatsApp Web...")
+        if logger:
+            logger("Chrome iniciado. Acessando WhatsApp Web...")
+        
         driver.get("https://web.whatsapp.com")
-        time.sleep(WHATSAPP_LOAD)
+        
+        # Tempo de espera maior para modo automático
+        wait_time = 10  # 10 segundos para carregar
+        if logger:
+            logger(f"Aguardando {wait_time} segundos para carregar WhatsApp...")
+        
+        time.sleep(wait_time)
 
-        # tentativa de confirmar painel lateral carregado (não fatal)
+        # Verificação simples se está autenticado
         try:
-            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "side")))
-        except Exception:
-            _log(logger, "Atenção: painel lateral não detectado — verifique se precisa escanear QR.")
+            # Tenta encontrar qualquer elemento que indique que está logado
+            driver.find_element(By.XPATH, "//div[@role='textbox']")
+            if logger:
+                logger("✓ WhatsApp Web parece estar autenticado")
+        except:
+            if logger:
+                logger("⚠️  WhatsApp Web não parece autenticado")
+                logger("   Talvez precise escanear QR Code novamente")
+            # Não falha imediatamente - continua e vê o que acontece
 
-        _log(logger, "WhatsApp Web carregado (ou pronto para autenticação manual).")
+        if logger:
+            logger("WhatsApp Web carregado (ou pronto para autenticação).")
+        
         return driver
+        
     except Exception as e:
-        _log(logger, f"Erro iniciar_driver: {e}")
-        _log(logger, traceback.format_exc())
+        if logger:
+            logger(f"❌ ERRO ao iniciar Chrome: {e}")
+            import traceback
+            logger(traceback.format_exc())
         raise
 
 # --------------------------
 # Buscar contato / abrir chat
 # --------------------------
-def procurar_contato_grupo(driver, target, logger=None, timeout=3):
+def procurar_contato_grupo(driver, target, logger=None, timeout=2):
     """
     Busca e abre a conversa com o contato/grupo pelo nome exato.
     Tenta vários seletores da caixa de busca; se falhar tenta clicar primeiro chat.
@@ -126,7 +262,7 @@ def procurar_contato_grupo(driver, target, logger=None, timeout=3):
         if not search_box:
             _log(logger, "Campo de busca não encontrado via seletores comuns. Tentando abrir primeiro chat como fallback...")
             # fallback: abrir primeiro chat da lista
-            first_chat = _wait_clickable(driver, By.CSS_SELECTOR, "div[role='listitem']", timeout=3)
+            first_chat = _wait_clickable(driver, By.CSS_SELECTOR, "div[role='listitem']", timeout=2)
             if first_chat:
                 try:
                     first_chat.click()
@@ -303,13 +439,13 @@ def clicar_enviar_arquivo(driver, logger=None, timeout=6.7):
     """
     try:
         # Tentativa direta: botão com aria-label="Enviar"
-        send_btn = _wait(driver, By.XPATH, "//div[@role='button' and @aria-label='Enviar']", timeout=5)
+        send_btn = _wait(driver, By.XPATH, "//div[@role='button' and @aria-label='Enviar']", timeout=2)
         if not send_btn:
             # fallback: span com ícone de send dentro do preview
-            send_btn = _wait(driver, By.XPATH, "//span[@data-icon='wds-ic-send-filled' or @data-icon='send']", timeout=5)
+            send_btn = _wait(driver, By.XPATH, "//span[@data-icon='wds-ic-send-filled' or @data-icon='send']", timeout=2)
         if not send_btn:
             # fallback: botão verde genérico
-            send_btn = _wait(driver, By.CSS_SELECTOR, "button[aria-label='Enviar']", timeout=5)
+            send_btn = _wait(driver, By.CSS_SELECTOR, "button[aria-label='Enviar']", timeout=2)
         if not send_btn:
             raise Exception("Botão para confirmar envio do arquivo não encontrado.")
         try:
@@ -355,9 +491,9 @@ def enviar_arquivo(driver, file_path, logger=None):
         time.sleep(1.2)
 
         # encontrar o botão de enviar arquivo
-        send_btn = _wait(driver, By.XPATH, "//div[@role='button' and @aria-label='Enviar']", timeout=8)
+        send_btn = _wait(driver, By.XPATH, "//div[@role='button' and @aria-label='Enviar']", timeout=2)
         if not send_btn:
-            send_btn = _wait(driver, By.XPATH, "//span[@data-icon='wds-ic-send-filled' or @data-icon='send']", timeout=8)
+            send_btn = _wait(driver, By.XPATH, "//span[@data-icon='wds-ic-send-filled' or @data-icon='send']", timeout=2)
 
         if not send_btn:
             raise Exception("Botão de envio do arquivo não encontrado")
@@ -416,9 +552,9 @@ def enviar_arquivo_com_mensagem(driver, file_path, message, logger=None):
             except Exception as e:
                 raise Exception("Falha ao inserir legenda")
 
-        send_btn = _wait(driver, By.XPATH, "//div[@role='button' and @aria-label='Enviar']", timeout=8)
+        send_btn = _wait(driver, By.XPATH, "//div[@role='button' and @aria-label='Enviar']", timeout=2)
         if not send_btn:
-            send_btn = _wait(driver, By.XPATH, "//span[@data-icon='wds-ic-send-filled' or @data-icon='send']", timeout=8)
+            send_btn = _wait(driver, By.XPATH, "//span[@data-icon='wds-ic-send-filled' or @data-icon='send']", timeout=2)
 
         if not send_btn:
             raise Exception("Botão de envio do arquivo+mensagem não encontrado")
@@ -446,8 +582,17 @@ def executar_envio(userdir, target, mode, message=None, file_path=None, logger=N
     mode: 'text', 'file', 'file_text'
     """
     driver = None
+
     try:
-        driver = iniciar_driver(userdir=userdir, headless=False, logger=logger)
+        vezes_executadas = contador_execucao(incrementar=False)
+        usar_headless = False #if vezes_executadas >=3 else False
+
+        if logger:
+            logger(f'Execução número {vezes_executadas}')
+            '''if usar_headless:
+                logger('A partir de agora, as automações rodarão em segundo plano.')'''
+
+        driver = iniciar_driver(userdir=userdir, headless=usar_headless, logger=logger)
         procurar_contato_grupo(driver, target, logger=logger)
         time.sleep(1.0)
 
@@ -471,10 +616,12 @@ def executar_envio(userdir, target, mode, message=None, file_path=None, logger=N
         _log(logger, traceback.format_exc())
         raise
     finally:
+        # SIMPLES: Fecha o driver se ele existir
         if driver:
             try:
-                time.sleep(5)
+                time.sleep(10)  # Espera 10 segundos antes de fechar para caso envie um arquivo maior
+                driver.close()
                 driver.quit()
                 _log(logger, "Driver finalizado.")
-            except Exception:
-                pass
+            except:
+                pass  # Se der erro ao fechar, continua

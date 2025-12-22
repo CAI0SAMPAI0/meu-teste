@@ -46,7 +46,7 @@ def get_user_chrome_profile_dir():
     profile = os.path.join(
         base_dir,
         "WhatsAppAutomation",
-        "chrome_profile"
+        "perfil_bot_whatsapp"
     )
 
     os.makedirs(profile, exist_ok=True)
