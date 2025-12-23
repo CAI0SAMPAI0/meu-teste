@@ -59,7 +59,7 @@ class MainWindow(QMainWindow):
         self.atualizar_contador_exibicao()
 
     def _aplicar_tema(self, modo):
-        """Define as cores do app, incluindo os botões roxos com efeito hover"""
+        """Define as cores do app, incluindo os botões roxos com efeito"""
         if modo == 'escuro':
             bg_color = "#2b2b2b"
             text_color = "#ffffff"

@@ -172,20 +172,6 @@ def iniciar_driver(userdir=None, headless=False, timeout=60, logger=None):
         options = uc.ChromeOptions()
         options.add_argument(f"--user-data-dir={userdir}")
 
-        # --- HEADLESS ---
-        '''if headless:
-            if logger: logger("Modo invisível (headless) ativado para esta execução.")
-            options.add_argument('--headless=new')
-            options.add_argument("--window-size=1920,1080")
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--disable-setuid-sandbox')
-            options.add_argument('--remote-debugging-pipe')
-            options.add_argument('--no-first-run')
-            options.add_argument('--no-default-browser-check')
-        else:
-            options.add_argument("--start-maximized")'''
-
         options.add_argument("--disable-notifications")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
@@ -625,3 +611,4 @@ def executar_envio(userdir, target, mode, message=None, file_path=None, logger=N
                 _log(logger, "Driver finalizado.")
             except:
                 pass  # Se der erro ao fechar, continua
+''
